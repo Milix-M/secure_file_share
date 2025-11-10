@@ -40,6 +40,8 @@
 4. **受信者 (Client-B)**: ブラウザがデータ受信 → JavaScriptがURLの**\#**以降（**キーA**）を読み取り、Web Crypto APIで復号 → ファイルをダウンロード。
 5. **サーバ (Go Backend)**: WebSocket切断（ダウンロード完了、ページ離脱、NW切断）を検知 → RAMディスクから**ID-B**のファイルを即時削除。
 
+起動直後に `EPHEMERALPOD_STORAGE_PATH` 配下へ残っていたファイルは全削除され、過去セッションの断片が残留しないことを保証する。
+
 ### ハードウェア構成
 
 * **Web/APサーバ**
@@ -59,6 +61,7 @@
 
 * 全通信をHTTPS (TLS 1.3以上) で暗号化。
 * WebSocketプロトコル (WSS) を利用。
+* CORS許可オリジンは `EPHEMERALPOD_ALLOWED_ORIGINS` で制御し、不要なオリジンからのブラウザアクセスを遮断する。
 
 ## **4\. 機能仕様**
 
@@ -84,6 +87,7 @@
     * 説明: 受信者がダウンロードページを開くと同時に、サーバとの間でWebSocket接続を確立する。サーバはWebSocket接続が維持されている間のみ、RAMディスク上のファイルへのアクセスを許可し、データを送信する。
     * **削除トリガー**: (1) 受信者がファイルを正常にダウンロード完了した時、(2) WebSocket接続が切断された時（ブラウザを閉じる、ネットワーク切断、タイムアウト等）。
     * **削除処理**: サーバはトリガー検知後、RAMディスク (tmpfs) 上の該当ファイルを即時削除する。
+    * **容量監視**: 新規アップロード時に論理的な空き容量が不足する場合、アップロード日時の古いファイルから順に自動削除して容量を確保する（デフォルト上限 12GB）。
 * **入力データと出力データ**：
   * 入力: 任意のファイル（ただしサイズ上限あり）
   * 出力: 共有URL（送信者）、復元されたファイル（受信者）
@@ -98,6 +102,7 @@
 * **パフォーマンス要件**：
   * **最大ファイルサイズ: 200MB** （`EPHEMERALPOD_MAX_UPLOAD_SIZE_MB` で変更可能。デフォルト200MB）
   * **ファイル有効期限: 30分** （`EPHEMERALPOD_UPLOAD_TTL` で変更可能。例: `8h`）
+  * **総保持容量: 12GB** （`EPHEMERALPOD_STORAGE_CAPACITY_MB` で変更可能。超過時は古いファイルから自動削除）
   * **同時接続数の目安**: RAM割当と実測に依存。最大ファイルサイズ想定時は約45セッションを参考値とする。
 * **セキュリティ要件**：
   * **クライアント側暗号化**: Web Crypto API (AES-256-GCM) を使用する。
@@ -108,6 +113,7 @@
     * サーバプロセスは最小権限で実行する。
   * **サーバ側（キー非保持）**:
     * **「URLハッシュの特性」**（4. 機能仕様参照）により、**復号キーは技術的にサーバ側で受信・保持することが不可能**な設計とする。
+  * **HTTPセキュリティヘッダー**: APIレスポンスに `Content-Security-Policy`, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, `Permissions-Policy` を付与し、ブラウザ通信面での攻撃面を最小化する。
   * **その他**: XSS, CSRF等の基本的なWeb脆弱性対策を講じる。
 * **可用性・信頼性**：
   * 本システムの特性上、サーバの再起動やクラッシュ時はRAM上の全データが失われる（仕様）。これは障害ではなく、揮発性という目的を達成する正常な動作と定義する。
@@ -122,6 +128,7 @@
   * `POST /api/upload`
     * リクエスト: multipart/form-data（フィールド名 `file`）暗号化済みバイナリを送信。
     * レスポンス: `{ "file_id": "...", "size": <bytes>, "ttl_seconds": <秒>, "expires_at": <RFC3339> }`
+    * 代表的なエラー: 413（`EPHEMERALPOD_MAX_UPLOAD_SIZE_MB` 超過）、507（`EPHEMERALPOD_STORAGE_CAPACITY_MB` 超過）
   * `GET /download/{file_id}`
     * リクエスト: JSONヘッダー不要。認証なし。
     * レスポンス: `{ "file_id": "...", "size": <bytes>, "ttl_seconds": <秒>, "expires_at": <RFC3339> }`
@@ -138,10 +145,12 @@
 * **環境変数（抜粋）**：
   * `EPHEMERALPOD_ADDR` – HTTP待受ポート。デフォルト`:8080`
   * `EPHEMERALPOD_STORAGE_PATH` – 暗号化ファイル保存先。デフォルト`/dev/shm/ephemeralpod`
+  * `EPHEMERALPOD_STORAGE_CAPACITY_MB` – 保存領域の論理上限。デフォルト`12288`（12GB）。不足時は最古のファイルから自動削除。
   * `EPHEMERALPOD_MAX_UPLOAD_SIZE_MB` – 最大アップロードサイズ。
   * `EPHEMERALPOD_UPLOAD_TTL` – ファイル有効期限（期間文字列）。
   * `EPHEMERALPOD_CLEANUP_INTERVAL` – 期限切れファイルクリーンアップ間隔。
   * `PUBLIC_API_BASE` / `PUBLIC_WS_BASE` – フロントエンドからのAPI/WS接続先を指定（開発・本番双方で利用）。
+  * `EPHEMERALPOD_ALLOWED_ORIGINS` – CORS許可オリジン。カンマ区切り。空または未設定の場合はワイルドカード(`*`)。
 
 ## **7\. 運用・保守**
 
