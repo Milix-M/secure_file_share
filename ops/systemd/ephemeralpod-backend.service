@@ -1,0 +1,27 @@
+[Unit]
+Description=Ephemeral Pod Backend API
+After=network-online.target
+Wants=network-online.target systemd-tmpfiles-setup.service
+
+[Service]
+Type=simple
+User=ephemeralpod
+Group=ephemeralpod
+WorkingDirectory=/opt/ephemeralpod/backend
+EnvironmentFile=/etc/ephemeralpod/backend.env
+ExecStart=/opt/ephemeralpod/backend/ephemeralpod
+Restart=on-failure
+RestartSec=5
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/etc
+ReadWritePaths=/dev/shm/ephemeralpod
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target
