@@ -1,0 +1,294 @@
+---
+import "@styles/global.css";
+
+export const prerender = false;
+
+const { fileId } = Astro.params;
+const apiBase = import.meta.env.PUBLIC_API_BASE ?? "";
+const wsBase = import.meta.env.PUBLIC_WS_BASE ?? "";
+---
+<!DOCTYPE html>
+<html lang="ja" class="scroll-smooth">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ダウンロード | Ephemeral Pod</title>
+  </head>
+  <body class="flex min-h-screen items-center justify-center px-6 py-16">
+    <main class="w-full max-w-3xl rounded-[32px] border border-white/10 bg-ep-surface/90 p-10 shadow-ep-card backdrop-blur-xl">
+      <header class="space-y-4">
+        <h1 class="text-3xl font-semibold text-white sm:text-4xl">ファイルダウンロード</h1>
+        <p class="text-slate-300">
+            このダウンロードリンクは一度ダウンロードを開始すると、<br>他のユーザーが同じファイルを取得できなくなります。接続が安定した環境でご利用ください。
+        </p>
+      </header>
+
+      <section
+        id="status"
+        class="mt-8 rounded-2xl border border-slate-600/70 bg-slate-900/70 px-5 py-4 text-sm leading-relaxed text-slate-200"
+        aria-live="polite"
+        hidden
+      ></section>
+
+      <section id="details" class="mt-8 space-y-4" hidden>
+        <p id="metadata" class="text-sm text-slate-300"></p>
+        <button
+          id="download-btn"
+          class="w-full rounded-full bg-gradient-to-r from-teal-400 via-sky-400 to-blue-500 px-5 py-3 text-sm font-semibold text-ep-ink shadow-lg shadow-sky-500/30 transition disabled:cursor-not-allowed disabled:opacity-40"
+          type="button"
+        >
+          復号してダウンロード
+        </button>
+      </section>
+    </main>
+
+    <script
+      type="module"
+      define:vars={{ apiBase, wsBase, fileId: fileId ?? "" }}
+    >
+      const API_BASE = apiBase || "";
+      const WS_BASE = wsBase || "";
+      const FILE_ID = fileId;
+
+      const statusBox = document.getElementById("status");
+      const details = document.getElementById("details");
+      const metadataBox = document.getElementById("metadata");
+      const downloadBtn = document.getElementById("download-btn");
+
+      const STATUS_BASE_CLASSES = "mt-8 rounded-2xl border border-slate-600/70 bg-slate-900/70 px-5 py-4 text-sm leading-relaxed";
+
+      const setStatus = (type, message) => {
+        if (!statusBox) return;
+        statusBox.hidden = false;
+        statusBox.textContent = message;
+        statusBox.className = STATUS_BASE_CLASSES;
+        if (type === "success") {
+          statusBox.classList.add("border-emerald-400/60", "text-emerald-200", "bg-emerald-500/10");
+        } else if (type === "error") {
+          statusBox.classList.add("border-rose-400/70", "text-rose-200", "bg-rose-500/10");
+        } else {
+          statusBox.classList.add("text-slate-200");
+        }
+      };
+
+      const parseHash = () => {
+        if (!window.location.hash.startsWith("#")) {
+          return { key: null, name: null };
+        }
+        const raw = window.location.hash.slice(1);
+        if (!raw) {
+          return { key: null, name: null };
+        }
+        if (raw.includes("=")) {
+          const params = new URLSearchParams(raw);
+          const key = params.get("key");
+          const name = params.get("name");
+          return {
+            key: key || null,
+            name: name || null,
+          };
+        }
+        return { key: raw, name: null };
+      };
+
+      const HASH_DATA = parseHash();
+
+      const getKeyFromHash = () => HASH_DATA.key;
+      const getNameFromHash = () => HASH_DATA.name;
+
+      const buildApiUrl = (path) => {
+        if (!API_BASE) return path;
+        return `${API_BASE.replace(/\/$/, "")}${path}`;
+      };
+
+      const buildWsUrl = (path) => {
+        if (WS_BASE) {
+          return `${WS_BASE.replace(/\/$/, "")}${path}`;
+        }
+
+        if (API_BASE) {
+          try {
+            const base = new URL(API_BASE, window.location.origin);
+            base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
+            return `${base.origin}${path}`;
+          } catch (error) {
+            console.warn("API_BASE を WebSocket URL に変換できませんでした", error);
+          }
+        }
+
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        return `${protocol}://${window.location.host}${path}`;
+      };
+
+      const fetchMetadata = async () => {
+        const response = await fetch(buildApiUrl(`/download/${FILE_ID}`));
+        if (!response.ok) {
+          throw new Error("ファイル情報の取得に失敗しました");
+        }
+        return response.json();
+      };
+
+      const importKey = async (b64) => {
+        const padded = b64.replace(/-/g, "+").replace(/_/g, "/");
+        const binary = atob(padded);
+        const buffer = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          buffer[i] = binary.charCodeAt(i);
+        }
+        return crypto.subtle.importKey("raw", buffer, { name: "AES-GCM" }, false, ["decrypt"]);
+      };
+
+      const receiveEncrypted = async () =>
+        new Promise((resolve, reject) => {
+          const ws = new WebSocket(buildWsUrl(`/ws/connect/${FILE_ID}`));
+          const chunks = [];
+
+          ws.binaryType = "arraybuffer";
+
+          ws.onmessage = (event) => {
+            if (event.data instanceof ArrayBuffer) {
+              chunks.push(new Uint8Array(event.data));
+            }
+          };
+
+          ws.onopen = () => setStatus("", "暗号化データを受信中...");
+          ws.onerror = () => {
+            setStatus("error", "通信エラーが発生しました");
+            ws.close();
+          };
+          ws.onclose = (event) => {
+            if (event.code !== 1000) {
+              reject(new Error(`サーバーが接続を終了しました (${event.code})`));
+              return;
+            }
+            if (chunks.length === 0) {
+              reject(new Error("データを受信できませんでした"));
+              return;
+            }
+            const total = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+            const merged = new Uint8Array(total);
+            let offset = 0;
+            chunks.forEach((chunk) => {
+              merged.set(chunk, offset);
+              offset += chunk.length;
+            });
+            resolve(merged.buffer);
+          };
+        });
+
+      const decryptBlob = async (buffer, keyB64) => {
+        const key = await importKey(keyB64);
+        const view = new Uint8Array(buffer);
+        const iv = view.slice(0, 12);
+        const cipher = view.slice(12);
+        const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, cipher);
+        return new Blob([decrypted]);
+      };
+
+      const determineFilename = (meta, fallback = "restored.bin") => {
+        const hashName = getNameFromHash();
+        if (hashName) {
+          return hashName;
+        }
+        if (!meta || !meta.original_name) {
+          return fallback;
+        }
+        return meta.original_name;
+      };
+
+      const formatBytes = (bytes) => {
+        if (!Number.isFinite(bytes)) return "-";
+        const units = ["B", "KB", "MB", "GB"];
+        let value = bytes;
+        let index = 0;
+        while (value >= 1024 && index < units.length - 1) {
+          value /= 1024;
+          index += 1;
+        }
+        return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+      };
+
+      const formatDuration = (seconds) => {
+        if (!Number.isFinite(seconds)) return "-";
+        if (seconds < 60) {
+          return `${Math.round(seconds)} 秒`;
+        }
+        const mins = seconds / 60;
+        if (mins < 60) {
+          return `${mins.toFixed(mins % 1 === 0 ? 0 : 1)} 分`;
+        }
+        const hours = mins / 60;
+        if (hours < 24) {
+          return `${hours.toFixed(hours % 1 === 0 ? 0 : 1)} 時間`;
+        }
+        const days = hours / 24;
+        return `${days.toFixed(days % 1 === 0 ? 0 : 1)} 日`;
+      };
+
+      const download = async () => {
+        try {
+          const key = getKeyFromHash();
+          if (!key) {
+            throw new Error("URLハッシュに復号キーが見つかりません");
+          }
+
+          const encrypted = await receiveEncrypted();
+          setStatus("", "復号処理中...");
+          const blob = await decryptBlob(encrypted, key);
+
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          const filename = determineFilename(window.__EP_DOWNLOAD_META);
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+
+          URL.revokeObjectURL(url);
+          setStatus("success", "ダウンロードが完了しました。サーバー上のファイルは削除されました。");
+          if (downloadBtn) downloadBtn.disabled = true;
+        } catch (error) {
+          console.error(error);
+          setStatus("error", error instanceof Error ? error.message : "ダウンロードに失敗しました");
+        }
+      };
+
+      const initialize = async () => {
+        const key = getKeyFromHash();
+        if (!key) {
+          setStatus("error", "URLハッシュに復号キーが含まれていません");
+          if (downloadBtn) downloadBtn.disabled = true;
+          return;
+        }
+
+        try {
+          setStatus("", "ファイル情報を取得中...");
+          const metadata = await fetchMetadata();
+          window.__EP_DOWNLOAD_META = metadata;
+          if (metadataBox) {
+            const parts = [];
+            const hintName = getNameFromHash();
+            if (hintName) {
+              parts.push(`ファイル名: ${hintName}`);
+            }
+            parts.push(`サイズ: ${formatBytes(metadata.size)}`);
+            parts.push(`期限: ${formatDuration(metadata.ttl_seconds)}`);
+            metadataBox.textContent = parts.join(" / ");
+          }
+          if (details) {
+            details.hidden = false;
+          }
+          setStatus("", "準備が整いました。ダウンロードを開始できます。");
+        } catch (error) {
+          console.error(error);
+          setStatus("error", error instanceof Error ? error.message : "初期化に失敗しました");
+          if (downloadBtn) downloadBtn.disabled = true;
+        }
+      };
+
+      downloadBtn?.addEventListener("click", download);
+      initialize();
+    </script>
+  </body>
+</html>

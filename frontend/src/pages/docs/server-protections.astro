@@ -1,0 +1,179 @@
+---
+import "@styles/global.css";
+const year = new Date().getFullYear();
+---
+<!DOCTYPE html>
+<html lang="ja" class="scroll-smooth">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>サーバーがファイルを完全に読み取れない理由 | Ephemeral Pod</title>
+  </head>
+  <body class="min-h-screen bg-ep-ink bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.18),_transparent_70%)] px-6 py-16">
+    <main class="mx-auto w-full max-w-6xl space-y-20">
+      <section class="relative overflow-hidden rounded-[40px] border border-white/10 bg-slate-950/80 p-12 shadow-ep-card backdrop-blur-xl">
+        <div class="pointer-events-none absolute -left-24 top-10 h-64 w-64 rounded-full bg-sky-400/20 blur-3xl"></div>
+        <div class="pointer-events-none absolute bottom-0 right-0 h-72 w-72 rounded-full bg-emerald-400/15 blur-3xl"></div>
+        <div class="relative">
+          <div class="space-y-6">
+            <span class="inline-flex items-center gap-2 rounded-full border border-sky-300/40 bg-sky-400/10 px-5 py-1 text-xs font-semibold uppercase tracking-[0.35em] text-sky-100">
+              Zero Knowledge Brief
+            </span>
+            <h1 class="text-3xl font-semibold text-white sm:text-4xl">
+              サーバーがファイルを読めないクライアント主導アーキテクチャ
+            </h1>
+            <p class="text-base leading-relaxed text-slate-200">
+              Ephemeral Pod はアップロード前にブラウザで完全暗号化し、サーバーは暗号文を短時間中継するだけのゼロ知識構造を採用しています。本ページでは暗号鍵管理・ストレージ戦略・通信制御の視点で仕組みを整理します。
+            </p>
+            <div class="flex flex-wrap items-center gap-3">
+              <a class="inline-flex items-center gap-2 rounded-full border border-slate-500/60 px-5 py-2 text-sm font-medium text-slate-100 transition hover:border-slate-300 hover:text-white" href="/">
+                トップページに戻る
+                <span aria-hidden="true">→</span>
+              </a>
+              <span class="text-xs uppercase tracking-[0.35em] text-slate-500">Client Encryption • Ephemeral Storage • One-shot Delivery</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="space-y-10">
+        <header class="space-y-3">
+          <h2 class="text-2xl font-semibold text-white">ゼロ知識性を支える 4 つの技術要素</h2>
+          <p class="text-sm text-slate-300">
+            暗号鍵の閉包、揮発性ストレージ、防御的な転送経路、そしてライフサイクル制御の組み合わせでサーバーから平文アクセスを排除します。
+          </p>
+        </header>
+        <div class="grid gap-6 md:grid-cols-2">
+          <article class="rounded-[32px] border border-sky-400/20 bg-slate-950/70 p-8 shadow-lg shadow-sky-500/10">
+            <h3 class="text-lg font-semibold text-white">1. ブラウザ内 AES-GCM 暗号化</h3>
+            <p class="mt-3 text-sm leading-relaxed text-slate-300">
+              Web Crypto API が 256bit 鍵と 96bit IV を生成し、アップロード前に AES-GCM で暗号化。鍵素材は URL フラグメント (<span class="font-mono">#</span> 以降) のみに含まれ、HTTP 経路やサーバーログに到達しません。
+            </p>
+            <ul class="mt-4 space-y-2 text-xs text-slate-400">
+              <li>・暗号化完了後に平文バッファをゼロ化</li>
+              <li>・鍵エクスポートは raw 形式で、そのまま共有リンクに埋め込み</li>
+            </ul>
+          </article>
+          <article class="rounded-[32px] border border-emerald-400/20 bg-slate-950/70 p-8 shadow-lg shadow-emerald-500/10">
+            <h3 class="text-lg font-semibold text-white">2. 暗号文のみを揮発メモリへ格納</h3>
+            <p class="mt-3 text-sm leading-relaxed text-slate-300">
+              サーバーが受領するのは暗号化 Blob のみ。<code class="font-mono text-sky-200">/dev/shm/ephemeralpod</code> にファイル名を乱数化して配置します。
+            </p>
+            <ul class="mt-4 space-y-2 text-xs text-slate-400">
+              <li>・プロセス終了時やホスト再起動時に自動消滅</li>
+            </ul>
+          </article>
+          <article class="rounded-[32px] border border-cyan-400/20 bg-slate-950/70 p-8 shadow-lg shadow-cyan-500/10">
+            <h3 class="text-lg font-semibold text-white">3. WebSocket による単回ストリーム配送</h3>
+            <p class="mt-3 text-sm leading-relaxed text-slate-300">
+              ダウンロードは 1 回限りの WebSocket を開き、暗号文をストリーム転送。読み出し完了を検知すると即座にストレージから削除し、file_id の再利用を無効化します。
+            </p>
+            <ul class="mt-4 space-y-2 text-xs text-slate-400">
+              <li>・ストリーム途中でエラーが発生した場合もロールバック削除</li>
+              <li>・成功時は TTL より前に確実に wipe して二重取得を阻止</li>
+            </ul>
+          </article>
+          <article class="rounded-[32px] border border-purple-400/20 bg-slate-950/70 p-8 shadow-lg shadow-purple-500/10">
+            <h3 class="text-lg font-semibold text-white">4. ゼロリテンションを守る運用ガード</h3>
+            <p class="mt-3 text-sm leading-relaxed text-slate-300">
+              TLS/HSTS や厳格な CSP を標準設定し、監査ログは匿名化したメタデータのみを記録。障害時も手動で平文を取得できる導線を設けません。
+            </p>
+            <ul class="mt-4 space-y-2 text-xs text-slate-400">
+              <li>・証跡用途でも暗号文を複製せず、一時的に統計情報を蓄積</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="space-y-8 rounded-[36px] border border-white/15 bg-slate-900/50 p-10">
+        <header class="space-y-3">
+          <h2 class="text-2xl font-semibold text-white">データの旅路: 5 ステップのタイムライン</h2>
+          <p class="text-sm text-slate-300">
+            クライアントでの暗号化から復号完了まで、どの段階でもサーバーに平文が滞在しないことを確認します。
+          </p>
+        </header>
+        <div class="grid gap-4 md:grid-cols-5">
+          {[
+            {
+              label: "Encrypt",
+              title: "暗号化",
+              body: "ブラウザが鍵と IV を生成し AES-GCM で暗号化。平文は即時破棄。",
+            },
+            {
+              label: "Upload",
+              title: "アップロード",
+              body: "暗号文のみ FormData で送信。鍵は URL ハッシュに残りネットワークを通らない。",
+            },
+            {
+              label: "Store",
+              title: "揮発保存",
+              body: "RAM 上にファイルを一時保存し、TTL と file_id を返却。ディスクには書き込まれない。",
+            },
+            {
+              label: "Stream",
+              title: "単回配信",
+              body: "受信者が WebSocket で暗号文を取得。完了と同時に暗号文を削除。",
+            },
+            {
+              label: "Decrypt",
+              title: "復号",
+              body: "受信側ブラウザが鍵を用いて復号。サーバーには鍵も平文も残らない。",
+            },
+          ].map(({ label, title, body }, index) => (
+            <article
+              class="flex flex-col gap-3 rounded-3xl border border-slate-600/40 bg-slate-950/70 p-6 text-sm text-slate-200"
+            >
+              <span class="text-xs font-semibold uppercase tracking-[0.35em] text-sky-300">{String(index + 1).padStart(2, "0")}. {label}</span>
+              <h3 class="text-base font-semibold text-white">{title}</h3>
+              <p class="text-sm leading-relaxed text-slate-300">{body}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+      <section class="space-y-8 rounded-[32px] border border-white/10 bg-slate-900/40 p-10">
+        <header class="space-y-3">
+          <h2 class="text-2xl font-semibold text-white">よくある質問</h2>
+          <p class="text-sm text-slate-300">導入時に寄せられる疑問を技術的な観点から回答します。</p>
+        </header>
+        <div class="space-y-6 text-sm leading-relaxed text-slate-200">
+          <details class="rounded-2xl border border-slate-600/40 bg-slate-950/70 p-5">
+            <summary class="cursor-pointer list-none text-white">Q. サーバー障害時に復旧用として平文を取り戻す手段はありますか？</summary>
+            <p class="mt-3 text-slate-300">
+              ありません。設計として平文を復旧する機構をあえて排除し、暗号文が失われればデータも同時に失われることを前提とします。復旧用に平文を保持した瞬間にゼロ知識性が崩れるためです。
+            </p>
+          </details>
+          <details class="rounded-2xl border border-slate-600/40 bg-slate-950/70 p-5">
+            <summary class="cursor-pointer list-none text-white">Q. TTL を延長したい場合はどうなりますか？</summary>
+            <p class="mt-3 text-slate-300">
+              TTL はアップロード時に決定されます。期限前に延長したい場合はクライアント側で再アップロードし、新しいリンクと鍵を共有してください。サーバー側で暗号文を保持し続けることは想定していません。
+            </p>
+          </details>
+          <details class="rounded-2xl border border-slate-600/40 bg-slate-950/70 p-5">
+            <summary class="cursor-pointer list-none text-white">Q. ダウンロード途中で通信が切れた場合は？</summary>
+            <p class="mt-3 text-slate-300">
+              転送が失敗すると暗号文はロールバック削除されます。利用者は再度リンクを開くことで新しい WebSocket が張られますが、サーバーに暗号文が残っていないためアップロードからのやり直しが必要になります。
+            </p>
+          </details>
+        </div>
+      </section>
+
+      <section class="relative overflow-hidden rounded-[36px] border border-sky-400/20 bg-gradient-to-br from-sky-500/25 via-transparent to-emerald-500/25 p-10 text-center">
+        <div class="pointer-events-none absolute inset-0 bg-slate-950/70 backdrop-blur"></div>
+        <div class="relative space-y-4">
+          <h2 class="text-2xl font-semibold text-white">ゼロ知識ファイル共有を体験する</h2>
+          <p class="text-sm text-slate-200">
+            トップページから暗号化〜共有フローを実際に試すと、ネットワークログに鍵が存在しないことを確認できます。
+          </p>
+          <a class="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 px-6 py-2 text-sm font-semibold text-ep-ink shadow-lg shadow-cyan-500/30 transition hover:scale-105" href="/">
+            アップロード画面へ戻る
+            <span aria-hidden="true">→</span>
+          </a>
+        </div>
+      </section>
+
+      <footer class="text-center text-xs text-slate-500">
+        © {year} Ephemeral Pod. クライアント暗号化が担保するゼロ知識なファイル共有を提供します。
+      </footer>
+    </main>
+  </body>
+</html>

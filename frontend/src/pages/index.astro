@@ -1,0 +1,325 @@
+---
+import "@styles/global.css";
+
+const apiBase = import.meta.env.PUBLIC_API_BASE ?? "";
+---
+<!DOCTYPE html>
+<html lang="ja" class="scroll-smooth">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ephemeral Pod</title>
+  </head>
+  <body class="flex min-h-screen items-center justify-center px-6 py-16">
+    <main class="w-full max-w-3xl rounded-[32px] border border-white/10 bg-ep-surface/90 p-10 shadow-ep-card backdrop-blur-xl">
+      <header class="space-y-4">
+        <h1 class="text-3xl font-semibold text-white sm:text-4xl">
+          セキュアファイル転送サービス Ephemeral Pod
+        </h1>
+        <p class="text-slate-300">
+          ファイルはブラウザ内で暗号化され、復号キーはサーバーに送信されません。アップロード後に生成される共有URLを安全な経路で相手に渡してください。
+        </p>
+        <p class="text-sm text-sky-200">
+          <a
+            class="inline-flex items-center gap-2 rounded-full border border-sky-300/40 bg-sky-400/10 px-4 py-1 transition hover:border-sky-200 hover:bg-sky-500/20"
+            href="/docs/server-protections"
+          >
+            サーバーがファイルを完全に読み取れない仕組みを確認する
+            <span aria-hidden="true">→</span>
+          </a>
+        </p>
+      </header>
+
+      <section class="mt-10 space-y-6">
+        <div
+          id="dropzone"
+          class="flex flex-col items-center gap-3 rounded-3xl border-2 border-dashed border-slate-500/60 bg-slate-900/40 p-12 text-center transition-all duration-200"
+          aria-live="polite"
+        >
+          <strong class="text-lg text-slate-100">ファイルをドラッグ＆ドロップ</strong>
+          <span class="text-sm text-slate-400">または</span>
+          <button
+            id="select-btn"
+            class="rounded-full border border-slate-500/60 px-5 py-2 text-sm font-medium text-slate-100 transition hover:border-sky-400 hover:text-sky-200"
+            type="button"
+          >
+            ファイルを選択
+          </button>
+          <input id="file-input" type="file" hidden />
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3">
+          <button
+            id="upload-btn"
+            class="rounded-full bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 px-6 py-2 text-sm font-semibold text-ep-ink shadow-lg shadow-cyan-500/30 transition disabled:cursor-not-allowed disabled:opacity-40"
+            type="button"
+            disabled
+          >
+            アップロード開始
+          </button>
+          <button
+            id="reset-btn"
+            class="hidden rounded-full border border-slate-500/60 px-5 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-300 hover:text-white"
+            type="button"
+          >
+            リセット
+          </button>
+          <span id="file-meta" class="text-sm text-slate-300"></span>
+        </div>
+
+        <div
+          id="status"
+          class="hidden rounded-2xl border border-slate-600/70 bg-slate-900/70 px-5 py-4 text-sm leading-relaxed text-slate-100"
+        ></div>
+      </section>
+
+      <section
+        id="link-section"
+        class="mt-12 hidden rounded-3xl border border-white/10 bg-slate-900/60 p-8 backdrop-blur"
+      >
+        <h2 class="text-2xl font-semibold text-white">共有URL</h2>
+        <div class="mt-4 space-y-4">
+          <code
+            id="share-link"
+            class="block w-full break-all rounded-2xl border border-slate-600/60 bg-slate-950/60 px-4 py-3 text-sm text-slate-100"
+          ></code>
+          <div class="flex flex-wrap items-center gap-3">
+            <button
+              id="copy-btn"
+              class="rounded-full bg-gradient-to-r from-sky-400 to-emerald-400 px-5 py-2 text-sm font-semibold text-ep-ink shadow-lg shadow-cyan-500/30 transition"
+              type="button"
+            >
+              リンクをコピー
+            </button>
+            <button
+              id="open-btn"
+              class="rounded-full border border-slate-500/60 px-5 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-300 hover:text-white"
+              type="button"
+            >
+              新しいタブで開く
+            </button>
+          </div>
+          <p class="text-sm text-slate-300">
+            ※ URLのハッシュ（ # 以降）はサーバーへ送信されません。キーはコピーミスを防ぐため、リンク全体をそのまま共有してください。
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" define:vars={{ apiBase }}>
+      const API_BASE = apiBase || "";
+
+      /** @type {HTMLDivElement | null} */
+      const dropzone = document.getElementById("dropzone");
+      /** @type {HTMLInputElement | null} */
+      const fileInput = document.getElementById("file-input");
+      const selectBtn = document.getElementById("select-btn");
+      const uploadBtn = document.getElementById("upload-btn");
+      const resetBtn = document.getElementById("reset-btn");
+      const statusBox = document.getElementById("status");
+      const fileMeta = document.getElementById("file-meta");
+      const linkSection = document.getElementById("link-section");
+      const shareLink = document.getElementById("share-link");
+      const copyBtn = document.getElementById("copy-btn");
+      const openBtn = document.getElementById("open-btn");
+
+      let selectedFile = null;
+      let working = false;
+
+      const STATUS_BASE_CLASSES = "rounded-2xl border border-slate-600/70 bg-slate-900/70 px-5 py-4 text-sm leading-relaxed";
+
+      const resetState = () => {
+        selectedFile = null;
+        working = false;
+        uploadBtn?.setAttribute("disabled", "");
+        resetBtn?.classList.add("hidden");
+        if (statusBox) {
+          statusBox.hidden = true;
+          statusBox.textContent = "";
+          statusBox.className = STATUS_BASE_CLASSES;
+        }
+        if (fileMeta) fileMeta.textContent = "";
+        if (shareLink) shareLink.textContent = "";
+        linkSection?.classList.add("hidden");
+      };
+
+      const setStatus = (type, message) => {
+        if (!statusBox) return;
+        statusBox.hidden = false;
+        statusBox.textContent = message;
+        statusBox.className = STATUS_BASE_CLASSES;
+        if (type === "success") {
+          statusBox.classList.add("border-emerald-400/60", "text-emerald-200", "bg-emerald-500/10");
+        } else if (type === "error") {
+          statusBox.classList.add("border-rose-400/70", "text-rose-200", "bg-rose-500/10");
+        } else {
+          statusBox.classList.add("text-slate-200");
+        }
+      };
+
+      const formatBytes = (bytes) => {
+        const units = ["B", "KB", "MB", "GB"];
+        let idx = 0;
+        let value = bytes;
+        while (value >= 1024 && idx < units.length - 1) {
+          value /= 1024;
+          idx += 1;
+        }
+        return `${value.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+      };
+
+      const formatDuration = (seconds) => {
+        if (seconds < 60) {
+          return `${seconds} 秒`;
+        }
+
+        const mins = seconds / 60;
+        if (mins < 60) {
+          return `${mins.toFixed(mins % 1 === 0 ? 0 : 1)} 分`;
+        }
+
+        const hours = mins / 60;
+        if (hours < 24) {
+          return `${hours.toFixed(hours % 1 === 0 ? 0 : 1)} 時間`;
+        }
+
+        const days = hours / 24;
+        return `${days.toFixed(days % 1 === 0 ? 0 : 1)} 日`;
+      };
+
+      const bufferToBase64Url = (buffer) => {
+        const bytes = new Uint8Array(buffer);
+        let binary = "";
+        for (let i = 0; i < bytes.byteLength; i += 1) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+      };
+
+      const buildApiUrl = (path) => {
+        if (!API_BASE) return path;
+        return `${API_BASE.replace(/\/$/, "")}${path}`;
+      };
+
+      const handleFileSelection = (file) => {
+        if (!file) return;
+        selectedFile = file;
+        uploadBtn?.removeAttribute("disabled");
+        resetBtn?.classList.remove("hidden");
+        if (fileMeta) {
+          fileMeta.textContent = `選択中: ${file.name} (${formatBytes(file.size)})`;
+        }
+        if (statusBox) statusBox.hidden = true;
+        linkSection?.classList.add("hidden");
+      };
+
+      const encryptFile = async (file) => {
+        const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+        const rawKey = await crypto.subtle.exportKey("raw", key);
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const fileBuffer = await file.arrayBuffer();
+        const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, fileBuffer);
+
+        const cipherBytes = new Uint8Array(encrypted);
+        const payload = new Uint8Array(iv.byteLength + cipherBytes.byteLength);
+        payload.set(iv, 0);
+        payload.set(cipherBytes, iv.byteLength);
+
+        const encryptedBlob = new Blob([payload], { type: "application/octet-stream" });
+        const keyB64 = bufferToBase64Url(rawKey);
+
+        cipherBytes.fill(0);
+
+        return { encryptedBlob, keyB64 };
+      };
+
+      const upload = async () => {
+        if (!selectedFile || working) return;
+        working = true;
+        uploadBtn?.setAttribute("disabled", "");
+        setStatus("", "暗号化中...");
+
+        try {
+          const { encryptedBlob, keyB64 } = await encryptFile(selectedFile);
+          setStatus("", "アップロード中...");
+
+          const formData = new FormData();
+          formData.append("file", encryptedBlob, "encrypted.bin");
+
+          const response = await fetch(buildApiUrl("/api/upload"), {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!response.ok) {
+            throw new Error(`サーバーがエラーを返しました (${response.status})`);
+          }
+
+          const payload = await response.json();
+          const origin = window.location.origin;
+          const hashParams = new URLSearchParams();
+          hashParams.set("key", keyB64);
+          if (selectedFile?.name) {
+            hashParams.set("name", selectedFile.name);
+          }
+          const shareUrl = `${origin}/download/${payload.file_id}#${hashParams.toString()}`;
+          if (shareLink) shareLink.textContent = shareUrl;
+          linkSection?.classList.remove("hidden");
+
+          setStatus("success", `共有リンクを生成しました。ファイルは ${formatDuration(payload.ttl_seconds)} で期限切れになります。`);
+
+          if (copyBtn) {
+            copyBtn.onclick = async () => {
+              await navigator.clipboard.writeText(shareUrl);
+              setStatus("success", "リンクをクリップボードへコピーしました。");
+            };
+          }
+
+          if (openBtn) {
+            openBtn.onclick = () => {
+              window.open(shareUrl, "_blank", "noopener,noreferrer");
+            };
+          }
+        } catch (error) {
+          console.error(error);
+          setStatus("error", error instanceof Error ? error.message : "アップロードに失敗しました");
+          uploadBtn?.removeAttribute("disabled");
+        } finally {
+          working = false;
+        }
+      };
+
+      selectBtn?.addEventListener("click", () => fileInput?.click());
+      fileInput?.addEventListener("change", (event) => {
+        const file = event.target.files?.[0];
+        handleFileSelection(file ?? null);
+      });
+
+      uploadBtn?.addEventListener("click", upload);
+      resetBtn?.addEventListener("click", resetState);
+
+      ["dragenter", "dragover"].forEach((evtName) => {
+        dropzone?.addEventListener(evtName, (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          dropzone.classList.add("border-sky-400", "bg-sky-500/10", "shadow-lg", "shadow-sky-500/20");
+        });
+      });
+
+      ["dragleave", "drop"].forEach((evtName) => {
+        dropzone?.addEventListener(evtName, (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          dropzone.classList.remove("border-sky-400", "bg-sky-500/10", "shadow-lg", "shadow-sky-500/20");
+        });
+      });
+
+      dropzone?.addEventListener("drop", (event) => {
+        const file = event.dataTransfer?.files?.[0];
+        handleFileSelection(file ?? null);
+      });
+
+      resetState();
+    </script>
+  </body>
+</html>
